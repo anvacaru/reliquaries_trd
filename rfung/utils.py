@@ -100,16 +100,16 @@ light_to_duration_mapping = {
 }
 
 
-def get_volume_from(distance: int) -> float:
+def get_volume_from(distance: float) -> float:
     closest_value = min(distance_volume_mapping.keys(), key=lambda k: abs(k - distance))
     return distance_volume_mapping[closest_value] / 100  # Normalize to [0.0, 1.0] range for pygame
 
 
-def get_pitch_from(humidity: int, temperature: int) -> int:
+def get_pitch_from(humidity: float, temperature: float) -> int:
     closest_value = min(humid_temp_to_pitch_mapping.keys(), key=lambda k: abs(k - (humidity + temperature)))
     return humid_temp_to_pitch_mapping[closest_value]
 
 
-def get_duration_from(light: int) -> float:
+def get_duration_from(light: float) -> float:
     closest_value = min(light_to_duration_mapping.keys(), key=lambda k: abs(k - light))
     return light_to_duration_mapping[closest_value]

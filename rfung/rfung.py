@@ -1,78 +1,80 @@
 from time import sleep
 
 import Adafruit_DHT as DHT  # type: ignore
-import numpy as np  # type: ignore
-import pygame  # type: ignore
 from gpiozero import DistanceSensor, DistanceSensorNoEcho  # type: ignore
+
+# connect to OSC server
+from pythonosc import osc_bundle_builder  # type: ignore
+from pythonosc import osc_message_builder  # type: ignore
+from pythonosc import udp_client  # type: ignore
 
 from .utils import BH1750, GPIO, get_duration_from, get_pitch_from, get_volume_from
 
+OSC_ADDR = '127.0.0.1'
+OSC_PORT = 57120
 
-def generate_tone(frequency: int, volume: float, duration: float, bpm: int) -> None:
-    beat_duration = 60.0 / bpm  # Calculate the duration of a single beat in seconds
-    num_beats = int(duration / beat_duration)  # Total beats within the specified duration
-
-    # Use a dictionary to cache waveforms for unique frequency-beat_duration combinations
-    waveform_cache = {}
-
-    # Generate the waveform if it's not in the cache
-    if (frequency, beat_duration) not in waveform_cache:
-        samples_mono = [
-            int(32767.0 * np.sin(i * 2.0 * np.pi * frequency / 44100.0)) for i in range(int(44100.0 * beat_duration))
-        ]
-        waveform_cache[(frequency, beat_duration)] = np.array([[s, s] for s in samples_mono], dtype=np.int16)
-
-    samples_stereo = waveform_cache[(frequency, beat_duration)]
-
-    sound = pygame.sndarray.make_sound(samples_stereo)
-    sound.set_volume(volume)  # Set volume for the actual sound object
-
-    for _ in range(num_beats):
-        sound.play()
-        pygame.time.wait(int(beat_duration * 1000))
+osc_client = udp_client.SimpleUDPClient(OSC_ADDR, OSC_PORT)
 
 
 def main() -> None:
-    # Initialize pygame mixer
-    pygame.mixer.init()
     # Distance sensor: HC-SR04
     distance_sensor = DistanceSensor(echo=GPIO.SR04_ECHO.value, trigger=GPIO.SR04_TRIGGER.value)
     # Light sensor: BH1750
     light_sensor = BH1750()
+    # Initialize with default values
+    previous_distance = 80
+    previous_lux = 24
+    previous_humidity = 50
+    previous_temperature = 23
     sleep(5)
 
     def _read() -> tuple[int, int, int, int]:
-        print('Reading data..')
+        nonlocal previous_distance, previous_lux, previous_humidity, previous_temperature
         try:
             distance = distance_sensor.distance * 100  # Convert to centimeters
         except DistanceSensorNoEcho:
-            print('DistanceSensorNoEcho encountered, using value 80 instead.')
-            distance = 80
+            distance = previous_distance
         try:
             lux = light_sensor.read_luminance()
         except OSError:
-            print('Encountered error while reading lux, using value 24 instead.')
-            lux = 24
+            lux = previous_lux
         try:
             humidity, temperature = DHT.read(DHT.DHT11, GPIO.DHT_11.value)
             if humidity is None or temperature is None:
-                raise ValueError('Failed to read from DHT sensor, using values 50 and 23 instead.')
-        except ValueError as e:
-            print(e)
-            humidity = 50
-            temperature = 23
+                raise ValueError()
+        except ValueError:
+            humidity = previous_humidity
+            temperature = previous_temperature
+
+        previous_distance = distance
+        previous_lux = lux
+        previous_humidity = humidity
+        previous_temperature = temperature
+
         return distance, lux, humidity, temperature
 
     while True:
         try:
             distance, lux, humidity, temperature = _read()
-            print('Distance:', distance, f' Light Level: {lux:.2f} lx', ' Humidity:', humidity, ' Temperature:', temperature)  # type: ignore
+
             volume = get_volume_from(distance)
             pitch = get_pitch_from(humidity, temperature)
             duration = get_duration_from(lux)
-            print('Volume:', volume, ' Pitch:', pitch, 'Duration:', duration)
-            generate_tone(pitch, volume, duration, 60)
-            sleep(2)
+
+            # send data over OSC to Supercollider
+            bundle = osc_bundle_builder.OscBundleBuilder(osc_bundle_builder.IMMEDIATELY)
+            msg = osc_message_builder.OscMessageBuilder(address='/sense')
+            msg.add_arg(distance)
+            msg.add_arg(lux)
+            msg.add_arg(humidity)
+            msg.add_arg(temperature)
+            msg.add_arg(volume)
+            msg.add_arg(pitch)
+            msg.add_arg(duration)
+            bundle.add_content(msg.build())
+            osc_client.send(bundle.build())
+
+            sleep(0.1)
         except Exception as e:
             print(e)
 
